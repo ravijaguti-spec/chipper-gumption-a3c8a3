@@ -1,0 +1,9 @@
+{
+  "name":"ELITORR Jewellery Order Management",
+  "short_name":"ELITORR",
+  "start_url":"/",
+  "display":"standalone",
+  "background_color":"#f6f5f2",
+  "theme_color":"#171717",
+  "description":"Shared jewellery order management system"
+}

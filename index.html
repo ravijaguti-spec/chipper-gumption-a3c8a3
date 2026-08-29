@@ -1,9 +1,13 @@
 <!DOCTYPE html>
-<!-- saved from url=(0101)file:///C:/Users/user/Desktop/ELITORR/ELITORR%20%E2%80%94%20Jewellery%20Order%20Management%20(3).html -->
+<!-- saved from url=(0088)file:///C:/Users/admin/Desktop/ELITORR%20%E2%80%94%20Jewellery%20Order%20Management.html -->
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>ELITORR — Jewellery Order Management</title>
+    <meta name="theme-color" content="#171717">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.webmanifest">
     <style>
         :root {
             --bg: #f6f5f2;
@@ -554,6 +558,59 @@ RND 4.69/440</b></div><div><span>Color Stone Details</span><br><b>(OVAL 26.54/22
 
     <script>
         const KEY = 'ELITORR_orders_v2';
+        // ELITORR uses the same-origin Node.js API when deployed as one service.
+        // Set window.API_BASE before this script only if the API is hosted separately.
+        const API_BASE = window.API_BASE || '';
+        let serverReady = false;
+        let serverSyncPromise = null;
+
+        async function apiRequest(path, options = {}) {
+            const res = await fetch(API_BASE + path, {
+                ...options,
+                headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+            });
+            const text = await res.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+            if (!res.ok) throw new Error((data && data.error) || ('API error ' + res.status));
+            return data;
+        }
+
+        async function syncFromServer(showError = false) {
+            try {
+                const localSnapshot = load().slice();
+                serverSyncPromise = apiRequest('/api/orders');
+                let data = await serverSyncPromise;
+                // One-time migration: if this browser already has ELITORR orders and the
+                // new shared database is empty, copy them to the server before normal sync.
+                let migrated = false;
+                try { migrated = localStorage.getItem('ELITORR_server_migrated') === '1'; } catch (_) {}
+                if (Array.isArray(data) && data.length === 0 && localSnapshot.length && !migrated) {
+                    const result = await apiRequest('/api/orders/import', { method: 'POST', body: JSON.stringify({ orders: localSnapshot.map(migrateOrder) }) });
+                    try { localStorage.setItem('ELITORR_server_migrated', '1'); } catch (_) {}
+                    data = await apiRequest('/api/orders');
+                    console.log('ELITORR migrated local orders:', result.imported);
+                }
+                if (Array.isArray(data)) {
+                    serverReady = true;
+                    window.__ELITORR_MEMORY__ = data.map(migrateOrder);
+                    try { localStorage.setItem(KEY, JSON.stringify(window.__ELITORR_MEMORY__)); } catch (_) {}
+                    render();
+                }
+            } catch (err) {
+                serverReady = false;
+                if (showError) alert('Server sync failed: ' + err.message);
+                console.error('ELITORR server sync:', err);
+            } finally {
+                serverSyncPromise = null;
+            }
+        }
+
+        function rememberLocal(arr) {
+            window.__ELITORR_MEMORY__ = arr;
+            try { localStorage.setItem(KEY, JSON.stringify(arr)); } catch (_) {}
+        }
+
         const STATUSES = [
             'Order place to factory',
             'Diamond issue',
@@ -613,11 +670,7 @@ RND 4.69/440</b></div><div><span>Color Stone Details</span><br><b>(OVAL 26.54/22
         }
 
         function save(arr) {
-            try {
-                localStorage.setItem(KEY, JSON.stringify(arr));
-            } catch (_) {
-                window.__ELITORR_MEMORY__ = arr;
-            }
+            rememberLocal(arr);
             render();
         }
 
@@ -901,14 +954,29 @@ RND 4.69/440</b></div><div><span>Color Stone Details</span><br><b>(OVAL 26.54/22
                 }
 
                 const file = $('fImage')?.files?.[0];
-                const finishSave = imageData => {
+                const finishSave = async imageData => {
                     if (imageData) base.image = imageData;
-                    const idx = all.findIndex(x => x.id === base.id);
-                    if (idx >= 0) all[idx] = base; else all.push(base);
-                    save(all);
-                    closeModal();
-                    render();
-                    alert(editId ? 'Order updated successfully.' : 'Order created successfully.');
+                    const wasEdit = !!editId;
+                    try {
+                        const saved = wasEdit
+                            ? await apiRequest('/api/orders/' + encodeURIComponent(base.id), { method: 'PUT', body: JSON.stringify(base) })
+                            : await apiRequest('/api/orders', { method: 'POST', body: JSON.stringify(base) });
+                        const normalized = migrateOrder(saved);
+                        const idx = all.findIndex(x => x.id === normalized.id);
+                        if (idx >= 0) all[idx] = normalized; else all.push(normalized);
+                        rememberLocal(all);
+                        serverReady = true;
+                        closeModal();
+                        render();
+                        alert(wasEdit ? 'Order updated successfully.' : 'Order created successfully.');
+                    } catch (err) {
+                        // Keep a local fallback so no work is lost if the server is temporarily unavailable.
+                        const idx = all.findIndex(x => x.id === base.id);
+                        if (idx >= 0) all[idx] = base; else all.push(base);
+                        save(all);
+                        alert('Server save failed. Saved locally only. Please retry when the server is online.\n\n' + err.message);
+                        console.error(err);
+                    }
                 };
 
                 if (file) {
@@ -1137,41 +1205,56 @@ RND 4.69/440</b></div><div><span>Color Stone Details</span><br><b>(OVAL 26.54/22
             } else { text('JEWELLERY IMAGE',imgX+100,imgY+178,20,'700','#999',190); drawAfterImage(); }
         }
 
-        function deleteOrder(id) {
+        async function deleteOrder(id) {
             const all = load();
             const o = all.find(x => x.id === id);
             if (!o) return;
             if (!confirm('Delete this order?')) return;
-            save(all.filter(x => x.id !== id));
+            try {
+                await apiRequest('/api/orders/' + encodeURIComponent(id), { method: 'DELETE' });
+                save(all.filter(x => x.id !== id));
+                serverReady = true;
+            } catch (err) {
+                alert('Could not delete from server: ' + err.message);
+            }
         }
 
-        function exportData() {
-            const data = load();
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'ELITORR-backup.json';
-            a.click();
-            URL.revokeObjectURL(a.href);
+        async function exportData() {
+            try {
+                const data = await apiRequest('/api/orders/export');
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'ELITORR-backup.json';
+                a.click();
+                URL.revokeObjectURL(a.href);
+            } catch (err) {
+                alert('Could not export server backup: ' + err.message);
+            }
         }
 
         function importData(e) {
             const file = e.target.files && e.target.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = function() {
+            reader.onload = async function() {
                 try {
                     const data = JSON.parse(reader.result);
                     if (!Array.isArray(data)) throw new Error('Invalid format');
-                    localStorage.setItem(KEY, JSON.stringify(data.map(migrateOrder)));
+                    if (!confirm('Import this backup into the shared ELITORR database? This replaces all current orders.')) return;
+                    const clean = data.map(migrateOrder);
+                    const result = await apiRequest('/api/orders/import', { method: 'POST', body: JSON.stringify({ orders: clean }) });
+                    rememberLocal(clean);
+                    serverReady = true;
                     render();
-                    alert('Backup imported successfully.');
-                } catch (_) {
-                    alert('Invalid backup file.');
+                    alert('Backup imported successfully. Orders imported: ' + (result.imported ?? clean.length));
+                } catch (err) {
+                    alert('Backup import failed: ' + (err.message || 'Invalid backup file.'));
+                } finally {
+                    e.target.value = '';
                 }
             };
             reader.readAsText(file);
-            e.target.value = '';
         }
 
         window.addEventListener('click', function(e) {
@@ -1180,7 +1263,12 @@ RND 4.69/440</b></div><div><span>Color Stone Details</span><br><b>(OVAL 26.54/22
         });
 
         render();
+        syncFromServer(false);
+        setInterval(() => syncFromServer(false), 30000);
         setInterval(render, 60000);
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+        }
     </script>
 
 </body></html>
