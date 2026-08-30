@@ -1,39 +1,30 @@
-# ELITORR — Shared Jewellery Order Management
+# ELITORR — Supabase + Netlify Ready
 
-This package keeps the existing ELITORR interface and moves order data to a shared Node.js + SQLite API. Every phone, tablet and computer using the same deployed URL reads and writes the same database.
+The existing ELITORR UI is preserved. The local SQLite database has been replaced by a shared Supabase PostgreSQL database. The API is also available as a Netlify Function, so the project can run on Netlify without a separate Node server.
 
-## Run locally
+## 1. Supabase table
+Open Supabase → SQL Editor → New query. Paste and run `supabase_schema.sql` once.
 
-1. Install Node.js 18+.
-2. Run `npm install`.
-3. Run `npm start`.
-4. Open `http://localhost:3000`.
+## 2. Netlify environment variables
+Open the ELITORR Netlify site → Site configuration → Environment variables and add:
 
-## Deploy on Render
+`NEXT_PUBLIC_SUPABASE_URL` = your Supabase project URL
 
-Create a Web Service from this folder/repository.
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` = your Supabase publishable key
 
-- Build Command: `npm install`
-- Start Command: `npm start`
-- Environment: Node
+Do NOT add or expose a Supabase service-role/secret key.
 
-**Important:** SQLite needs persistent storage. On Render, attach a persistent disk and set `DB_PATH` to a path on that disk, for example `/var/data/elitorr.db`. Without a persistent disk, a redeploy/restart can lose SQLite data.
+## 3. Deploy
+Upload/deploy this project to Netlify. `netlify.toml` configures the `public` folder and the API function automatically.
 
-## Deploy on Railway
+The existing UI continues to call `/api/orders`; Netlify redirects those requests to the Supabase-backed function.
 
-Deploy the repository as a Node service and attach a persistent volume. Set `DB_PATH` to the mounted volume path, for example `/data/elitorr.db`.
+## 4. Verify
+Open:
 
-## Shared use
+`https://YOUR-SITE.netlify.app/api/health`
 
-Open the deployed URL on all devices. The frontend refreshes from the server every 30 seconds, and create/edit/delete/import/export operations use the shared API.
+It should return JSON containing `"status":"ok"` and `"database":"supabase"`.
 
-## Backup
-
-`Export Backup` downloads the current server database as JSON. `Import Backup` replaces the shared database with the selected JSON backup.
-
-## Notes
-
-- Images are stored as base64 strings in SQLite, matching the existing ELITORR data model.
-- The existing JPG generation remains in the frontend and includes the product image and notes.
-- The PWA manifest/service worker allows supported mobile browsers to install ELITORR to the home screen without an app store.
-- This package does not add login/role permissions; anyone with the deployed URL can access the order data.
+## Important
+The current SQL policies allow anonymous users to read/write the shared order table. This is suitable only for a controlled/private deployment. For a public production system, add Supabase Auth and user/role-based RLS before exposing customer/order data.

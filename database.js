@@ -1,109 +1,134 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'elitorr.db');
-const db = new Database(DB_PATH);
-db.pragma('foreign_keys = ON');
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY,
-    customer TEXT NOT NULL,
-    vendorName TEXT NOT NULL,
-    designNo TEXT,
-    jobNo TEXT,
-    itemType TEXT,
-    weight TEXT,
-    size TEXT,
-    metalKT TEXT,
-    rhodiumColor TEXT,
-    diamondDetails TEXT,
-    colorStoneDetails TEXT,
-    quantity INTEGER DEFAULT 1,
-    orderDate TEXT,
-    deliveryDate TEXT,
-    status TEXT DEFAULT 'Order place to factory',
-    priority TEXT DEFAULT 'Normal',
-    image TEXT,
-    history TEXT,
-    notes TEXT,
-    createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-    updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-`);
-
-const parseJson = value => { try { return JSON.parse(value); } catch { return value; } };
-const rowToOrder = row => row ? ({ ...row, history: parseJson(row.history) || [], notes: parseJson(row.notes) || [] }) : null;
-
-function getAllOrders() {
-  return db.prepare('SELECT * FROM orders ORDER BY createdAt DESC').all().map(rowToOrder);
-}
-function getOrderById(id) { return rowToOrder(db.prepare('SELECT * FROM orders WHERE id = ?').get(id)); }
-
-function createOrder(order) {
-  const stmt = db.prepare(`INSERT INTO orders (
-    id, customer, vendorName, designNo, jobNo, itemType, weight, size, metalKT, rhodiumColor,
-    diamondDetails, colorStoneDetails, quantity, orderDate, deliveryDate, status, priority, image, history, notes
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  stmt.run(
-    order.id, order.customer, order.vendorName || '', order.designNo ?? null, order.jobNo ?? null,
-    order.itemType ?? null, order.weight ?? null, order.size ?? null, order.metalKT ?? null,
-    order.rhodiumColor ?? null, order.diamondDetails ?? null, order.colorStoneDetails ?? null,
-    Number.isFinite(Number(order.quantity)) ? Number(order.quantity) : 1, order.orderDate ?? null,
-    order.deliveryDate ?? null, order.status || 'Order place to factory', order.priority || 'Normal',
-    order.image ?? null, JSON.stringify(Array.isArray(order.history) ? order.history : []),
-    JSON.stringify(Array.isArray(order.notes) ? order.notes : [])
-  );
-  return getOrderById(order.id);
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.warn('Supabase environment variables are missing. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY.');
 }
 
-function updateOrder(id, order) {
-  const existing = getOrderById(id);
-  if (!existing) return null;
-  const merged = { ...existing, ...order, id };
-  db.prepare(`UPDATE orders SET
-    customer=?, vendorName=?, designNo=?, jobNo=?, itemType=?, weight=?, size=?, metalKT=?, rhodiumColor=?,
-    diamondDetails=?, colorStoneDetails=?, quantity=?, orderDate=?, deliveryDate=?, status=?, priority=?, image=?,
-    history=?, notes=?, updatedAt=CURRENT_TIMESTAMP WHERE id=?`).run(
-      merged.customer, merged.vendorName, merged.designNo ?? null, merged.jobNo ?? null, merged.itemType ?? null,
-      merged.weight ?? null, merged.size ?? null, merged.metalKT ?? null, merged.rhodiumColor ?? null,
-      merged.diamondDetails ?? null, merged.colorStoneDetails ?? null,
-      Number.isFinite(Number(merged.quantity)) ? Number(merged.quantity) : 1,
-      merged.orderDate ?? null, merged.deliveryDate ?? null, merged.status || existing.status,
-      merged.priority || existing.priority, merged.image ?? null,
-      JSON.stringify(Array.isArray(merged.history) ? merged.history : []),
-      JSON.stringify(Array.isArray(merged.notes) ? merged.notes : []), id
-    );
-  return getOrderById(id);
+function apiUrl(path = '') {
+  return `${(SUPABASE_URL || '').replace(/\/$/, '')}/rest/v1/${path}`;
 }
-function deleteOrder(id) { return db.prepare('DELETE FROM orders WHERE id = ?').run(id).changes > 0; }
-function deleteAllOrders() { return db.prepare('DELETE FROM orders').run().changes; }
 
-function importOrders(orders) {
-  const tx = db.transaction(items => {
-    deleteAllOrders();
-    const insert = db.prepare(`INSERT INTO orders (
-      id, customer, vendorName, designNo, jobNo, itemType, weight, size, metalKT, rhodiumColor,
-      diamondDetails, colorStoneDetails, quantity, orderDate, deliveryDate, status, priority, image, history, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    let count = 0;
-    for (const order of items) {
-      if (!order || !order.id || !order.customer) continue;
-      insert.run(
-        order.id, order.customer, order.vendorName || '', order.designNo ?? null, order.jobNo ?? null,
-        order.itemType ?? null, order.weight ?? null, order.size ?? null, order.metalKT ?? null,
-        order.rhodiumColor ?? null, order.diamondDetails ?? null, order.colorStoneDetails ?? null,
-        Number.isFinite(Number(order.quantity)) ? Number(order.quantity) : 1, order.orderDate ?? null,
-        order.deliveryDate ?? null, order.status || 'Order place to factory', order.priority || 'Normal',
-        order.image ?? null, JSON.stringify(Array.isArray(order.history) ? order.history : []),
-        JSON.stringify(Array.isArray(order.notes) ? order.notes : [])
-      );
-      count++;
+async function supabaseRequest(path, options = {}) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('Supabase environment variables are not configured');
+  const response = await fetch(apiUrl(path), {
+    ...options,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
     }
-    return count;
   });
-  return tx(orders);
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!response.ok) {
+    const message = body?.message || body?.hint || body?.details || body?.error || text || `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return body;
 }
 
-module.exports = { db, getAllOrders, getOrderById, createOrder, updateOrder, deleteOrder, importOrders, deleteAllOrders };
+function normalizeOrder(order) {
+  return {
+    id: order.id,
+    customer: order.customer,
+    vendorName: order.vendorName || '',
+    designNo: order.designNo ?? null,
+    jobNo: order.jobNo ?? null,
+    itemType: order.itemType ?? null,
+    weight: order.weight ?? null,
+    size: order.size ?? null,
+    metalKT: order.metalKT ?? null,
+    rhodiumColor: order.rhodiumColor ?? null,
+    diamondDetails: order.diamondDetails ?? null,
+    colorStoneDetails: order.colorStoneDetails ?? null,
+    quantity: Number.isFinite(Number(order.quantity)) ? Number(order.quantity) : 1,
+    orderDate: order.orderDate ?? null,
+    deliveryDate: order.deliveryDate ?? null,
+    status: order.status || 'Order place to factory',
+    priority: order.priority || 'Normal',
+    image: order.image ?? null,
+    history: Array.isArray(order.history) ? order.history : [],
+    notes: Array.isArray(order.notes) ? order.notes : [],
+    createdAt: order.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function dbRowToOrder(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    vendorName: row.vendorName ?? row.vendor_name ?? '',
+    designNo: row.designNo ?? row.design_no ?? null,
+    jobNo: row.jobNo ?? row.job_no ?? null,
+    itemType: row.itemType ?? row.item_type ?? null,
+    metalKT: row.metalKT ?? row.metal_kt ?? null,
+    rhodiumColor: row.rhodiumColor ?? row.rhodium_color ?? null,
+    diamondDetails: row.diamondDetails ?? row.diamond_details ?? null,
+    colorStoneDetails: row.colorStoneDetails ?? row.color_stone_details ?? null,
+    orderDate: row.orderDate ?? row.order_date ?? null,
+    deliveryDate: row.deliveryDate ?? row.delivery_date ?? null,
+    createdAt: row.createdAt ?? row.created_at ?? null,
+    updatedAt: row.updatedAt ?? row.updated_at ?? null,
+    history: Array.isArray(row.history) ? row.history : [],
+    notes: Array.isArray(row.notes) ? row.notes : []
+  };
+}
+
+async function getAllOrders() {
+  const data = await supabaseRequest('orders?select=*&order=createdAt.desc');
+  return (data || []).map(dbRowToOrder);
+}
+
+async function getOrderById(id) {
+  const data = await supabaseRequest(`orders?select=*&id=eq.${encodeURIComponent(id)}&limit=1`);
+  return dbRowToOrder(data?.[0]);
+}
+
+async function createOrder(order) {
+  const normalized = normalizeOrder(order);
+  const data = await supabaseRequest('orders', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(normalized)
+  });
+  return dbRowToOrder(data?.[0]);
+}
+
+async function updateOrder(id, order) {
+  const existing = await getOrderById(id);
+  if (!existing) return null;
+  const merged = normalizeOrder({ ...existing, ...order, id });
+  delete merged.createdAt;
+  const data = await supabaseRequest(`orders?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(merged)
+  });
+  return dbRowToOrder(data?.[0]);
+}
+
+async function deleteOrder(id) {
+  const data = await supabaseRequest(`orders?id=eq.${encodeURIComponent(id)}&select=id`, {
+    method: 'DELETE',
+    headers: { Prefer: 'return=representation' }
+  });
+  return Array.isArray(data) && data.length > 0;
+}
+
+async function importOrders(orders) {
+  const valid = orders.filter(o => o && o.id && o.customer).map(normalizeOrder);
+  await supabaseRequest('orders?id=neq.__ELITORR_IMPORT_SENTINEL__', { method: 'DELETE' });
+  if (!valid.length) return 0;
+  await supabaseRequest('orders', {
+    method: 'POST',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify(valid)
+  });
+  return valid.length;
+}
+
+module.exports = { getAllOrders, getOrderById, createOrder, updateOrder, deleteOrder, importOrders };
